@@ -3,33 +3,34 @@ import numpy as np
 from sklearn import datasets
 import sys
 import os
+import matplotlib.pyplot as plt
 
 # Import helper functions
 dir_path = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, dir_path + "/../utils")
-from data_manipulation import divide_on_feature, train_test_split
-from data_operation import calculate_entropy, accuracy_score
+from data_manipulation import divide_on_feature, train_test_split, standardize
+from data_operation import calculate_variance, mean_squared_error
 sys.path.insert(0, dir_path + "/../unsupervised_learning/")
 from principal_component_analysis import PCA
 
 
-# Class that represents a decision node or leaf in the decision tree
-class DecisionNode():
+# Class that represents a regressor node or leaf in the regression tree
+class RegressionNode():
     def __init__(self, feature_i=None, threshold=None,
-                 label=None, true_branch=None, false_branch=None):
+                 value=None, true_branch=None, false_branch=None):
         self.feature_i = feature_i          # Index for the feature that is tested
         self.threshold = threshold          # Threshold value for feature
-        self.label = label                  # Label if the node is a leaf in the tree
+        self.value = value                  # Continuous value of node
         self.true_branch = true_branch      # 'Left' subtree
         self.false_branch = false_branch    # 'Right' subtree
 
 
-class DecisionTree():
-    def __init__(self, min_samples_split=2, min_gain=1e-7,
-                 max_depth=float("inf")):
-        self.root = None  # Root node in dec. tree
+class RegressionTree():
+    def __init__(self, min_samples_split=20, min_var_red=1e-4,
+                 max_depth=10):
+        self.root = None  # Root node in regr. tree
         self.min_samples_split = min_samples_split
-        self.min_gain = min_gain
+        self.min_var_red = min_var_red
         self.max_depth = max_depth
 
     def fit(self, X, y):
@@ -37,11 +38,10 @@ class DecisionTree():
         self.current_depth = 0
         self.root = self._build_tree(X, y)
 
-    def _build_tree(self, X, y):
-        # Calculate the entropy by the label values
-        entropy = calculate_entropy(y)
 
-        highest_info_gain = 0
+    def _build_tree(self, X, y, current_depth=0):
+
+        largest_variance_reduction = 0
         best_criteria = None    # Feature index and threshold
         best_sets = None        # Subsets of the data
 
@@ -51,68 +51,70 @@ class DecisionTree():
         n_samples, n_features = np.shape(X)
 
         if n_samples >= self.min_samples_split:
-            # Calculate the information gain for each feature
+            # Calculate the variance reduction for each feature
             for feature_i in range(n_features):
                 # All values of feature_i
                 feature_values = np.expand_dims(X[:, feature_i], axis=1)
                 unique_values = np.unique(feature_values)
 
-                # Iterate through all unique values of feature column i and
-                # calculate the informaion gain
-                for threshold in unique_values:
-                    Xy_1, Xy_2 = divide_on_feature(X_y, feature_i, threshold)
-                    # If one subset there is no use of calculating the
-                    # information gain
-                    if len(Xy_1) > 0 and len(Xy_2) > 0:
-                        # Calculate information gain
-                        p = len(Xy_1) / n_samples
-                        y1 = Xy_1[:, -1]
-                        y2 = Xy_2[:, -1]
-                        info_gain = entropy - p * \
-                            calculate_entropy(y1) - (1 - p) * \
-                            calculate_entropy(y2)
+                # Find points to split at as the mean of every following
+                # pair of points
+                x = unique_values
+                split_points = [(x[i-1]+x[i])/2 for i in range(1,len(x))]
 
-                        # If this threshold resulted in a higher information gain than previously
-                        # recorded save the threshold value and the feature
-                        # index
-                        if info_gain > highest_info_gain:
-                            highest_info_gain = info_gain
+                # Iterate through all unique values of feature column i and
+                # calculate the variance reduction
+                for threshold in split_points:
+                    Xy_1, Xy_2 = divide_on_feature(X_y, feature_i, threshold)
+
+                    if len(Xy_1) > 0 and len(Xy_2) > 0:
+
+                        y_1 = Xy_1[:, -1]
+                        y_2 = Xy_2[:, -1]
+
+                        var_tot = calculate_variance(np.expand_dims(y, axis=1))
+                        var_1 = calculate_variance(np.expand_dims(y_1, axis=1))
+                        var_2 = calculate_variance(np.expand_dims(y_2, axis=1))
+                        frac_1 = len(y_1) / len(y)
+                        frac_2 = len(y_2) / len(y)
+
+                        # Calculate the variance reduction
+                        variance_reduction = var_tot - (frac_1 * var_1 + frac_2 * var_2)
+
+                        # If this threshold resulted in a larger variance reduction than
+                        # previously registered we save the feature index and threshold
+                        # and the two sets
+                        if variance_reduction > largest_variance_reduction:
+                            largest_variance_reduction = variance_reduction
                             best_criteria = {
                                 "feature_i": feature_i, "threshold": threshold}
                             best_sets = {
                                 "left_branch": Xy_1, "right_branch": Xy_2}
 
         # If we have any information gain to go by we build the tree deeper
-        if self.current_depth < self.max_depth and highest_info_gain > self.min_gain:
+        if current_depth < self.max_depth and largest_variance_reduction > self.min_var_red:
             leftX, leftY = best_sets["left_branch"][
                 :, :-1], best_sets["left_branch"][:, -1]    # X - all cols. but last, y - last
             rightX, rightY = best_sets["right_branch"][
                 :, :-1], best_sets["right_branch"][:, -1]    # X - all cols. but last, y - last
-            true_branch = self._build_tree(leftX, leftY)
-            false_branch = self._build_tree(rightX, rightY)
-            self.current_depth += 1
-            return DecisionNode(feature_i=best_criteria["feature_i"], threshold=best_criteria[
+            true_branch = self._build_tree(leftX, leftY, current_depth + 1)
+            false_branch = self._build_tree(rightX, rightY, current_depth + 1)
+            return RegressionNode(feature_i=best_criteria["feature_i"], threshold=best_criteria[
                                 "threshold"], true_branch=true_branch, false_branch=false_branch)
-        # There's no recorded information gain so we are at a leaf
-        most_common = None
-        max_count = 0
-        results = {}
-        for label in np.unique(y):
-            count = len(y[y == label])
-            if count > max_count:
-                most_common = label
-                max_count = count
-        return DecisionNode(label=most_common)
+
+        # Set y prediction for this leaf as the mean
+        # of the y training data values of this leaf
+        return RegressionNode(value=np.mean(y))
 
     # Do a recursive search down the tree and label the data sample by the
     # value of the leaf that we end up at
-    def classify_sample(self, x, tree=None):
+    def predict_value(self, x, tree=None):
         if tree is None:
             tree = self.root
 
         # If we have a label => classify
-        if tree.label is not None:
-            return tree.label
+        if tree.value is not None:
+            return tree.value
 
         # Choose the feature that we will test
         feature_value = x[tree.feature_i]
@@ -126,13 +128,13 @@ class DecisionTree():
             branch = tree.true_branch
 
         # Test subtree
-        return self.classify_sample(x, branch)
+        return self.predict_value(x, branch)
 
     # Classify samples one by one and return the set of labels
     def predict(self, X):
         y_pred = []
         for x in X:
-            y_pred.append(self.classify_sample(x))
+            y_pred.append(self.predict_value(x))
         return y_pred
 
     def print_tree(self, tree=None, indent=" "):
@@ -140,8 +142,8 @@ class DecisionTree():
             tree = self.root
 
         # If we're at leaf => print the label
-        if tree.label is not None:
-            print tree.label
+        if tree.value is not None:
+            print tree.value
         # Go deeper down the tree
         else:
             # Print test
@@ -156,21 +158,21 @@ class DecisionTree():
 
 def main():
 
-    data = datasets.load_digits()
-    X = data.data
-    y = data.target
+    X, y = datasets.make_regression(n_features=1, n_samples=100, bias=0, noise=5)
 
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.4)
+    X_train, X_test, y_train, y_test = train_test_split(standardize(X), y, test_size=0.3)
 
-    clf = DecisionTree()
+    clf = RegressionTree()
     clf.fit(X_train, y_train)
-    # clf.print_tree()
     y_pred = clf.predict(X_test)
 
-    print "Accuracy:", accuracy_score(y_test, y_pred)
+    # Print the mean squared error
+    print "Mean Squared Error:", mean_squared_error(y_test, y_pred)
 
-    pca = PCA()
-    pca.plot_in_2d(X_test, y_pred)
+    # Plot the results
+    plt.scatter(X_test[:, 0], y_test, color='black')
+    plt.scatter(X_test[:, 0], y_pred, color='green')
+    plt.show()
 
 
 if __name__ == "__main__":
